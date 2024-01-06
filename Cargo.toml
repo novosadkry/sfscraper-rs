@@ -4,4 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+anyhow = "1.0.79"
+dotenv = "0.15.0"
 sf-api = { git = "https://github.com/the-marenga/sf-api", version = "0.0.1" }
+tokio = { version = "1.35.1", features = ["full"] }
