@@ -1167,6 +1167,7 @@ name = "sfscraper"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "dotenv",
  "env_logger",
  "log",
