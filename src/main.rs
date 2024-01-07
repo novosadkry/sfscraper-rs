@@ -1,7 +1,7 @@
-use std::{io, collections::HashSet};
+use std::{io, sync::Arc};
 use log::{info, debug};
-use anyhow::{Context, Result};
-use tokio::time::{sleep, Duration};
+use anyhow::{Context, Result, bail};
+use tokio::{signal, sync::Mutex};
 use sf_api::{
     sso::SFAccount,
     session::CharacterSession,
@@ -13,7 +13,11 @@ use sfscraper::Config;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    sfscraper::init()?;
+    dotenv::dotenv()?;
+
+    let env = env_logger::Env::default().default_filter_or("info");
+    env_logger::Builder::from_env(env).try_init()
+        .context("Failed to initialize logger!")?;
 
     let config = Config::from_env()
         .context("Invalid or missing configuration")?;
@@ -33,9 +37,11 @@ async fn main() -> Result<()> {
     io::stdin().read_line(&mut input)?;
 
     let index = input.trim().parse::<usize>()?;
-    let session = sessions
-        .get_mut(index)
-        .context("Invalid selection")?;
+    let mut session = if index < sessions.len() {
+        sessions.swap_remove(index)
+    } else {
+        bail!("Invalid selection");
+    };
 
     let login_response = session.login().await?;
     let mut game_state = GameState::new(login_response)?;
@@ -46,48 +52,12 @@ async fn main() -> Result<()> {
     let response = session.send_command(&Command::UpdatePlayer).await?;
     game_state.update(response)?;
 
-    info!("Waiting a few milliseconds");
-    sleep(Duration::from_millis(250)).await;
+    let session = Arc::new(Mutex::new(session));
+    let game_state = Arc::new(Mutex::new(game_state));
 
-    info!("Getting scrapbook contents");
-    let response = session.send_command(&Command::ViewScrapbook).await?;
-    game_state.update(response)?;
+    let scrape_handle = tokio::spawn(sfscraper::thread_scrape_halloffame(session.clone(), game_state.clone()));
 
-    let scrapbook = game_state.unlocks.scrapbok
-        .clone()
-        .context("Your character doesn't have an active scrapbook!")?;
-
-    debug!("{:?}", scrapbook.items);
-
-    info!("Waiting a few milliseconds");
-    sleep(Duration::from_millis(250)).await;
-
-    info!("Getting players from hall of fame");
-    let response = session.send_command(&Command::HallOfFamePage { page: 650 }).await?;
-    game_state.update(response)?;
-
-    let mut players_to_attack = HashSet::new();
-    let hall_entries = game_state.other_players.hall_of_fame.clone();
-
-    for hall_entry in hall_entries.iter() {
-        info!("Waiting a few milliseconds");
-        sleep(Duration::from_millis(1000)).await;
-
-        info!("Viewing player {} details", hall_entry.name);
-        let response = session.send_command(&Command::ViewPlayer { ident: hall_entry.name.clone() }).await?;
-        game_state.update(response)?;
-
-        if let Some(player) = game_state.other_players.lookup_name(&hall_entry.name) {
-            for equip in player.equipment.0.iter().flatten() {
-                let equip_ident = equip.equipment_ident().unwrap();
-                if !scrapbook.items.contains(&equip_ident) {
-                    debug!("Player {} has an item you haven't discovered yet", player.name);
-                    players_to_attack.insert(player.name.clone());
-                    break;
-                }
-            }
-        }
-    }
+    signal::ctrl_c().await?;
 
     Ok(())
 }
