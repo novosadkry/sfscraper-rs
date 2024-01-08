@@ -1,4 +1,4 @@
-use std::{env, collections::HashSet};
+use std::{env, collections::{HashSet, HashMap}};
 use chrono::Local;
 use log::{info, debug, warn};
 use anyhow::{Context, Result, bail};
@@ -29,6 +29,47 @@ pub struct Config {
 pub struct ScrapBookInfo {
     pub scrapbook: ScrapBook,
     pub progress: f32
+}
+
+pub struct FightPriorityQueue {
+    equipment_set: HashSet<EquipmentIdent>,
+    equipment_map: HashMap<String, HashSet<EquipmentIdent>>,
+    player_queue: PriorityQueue<String, usize>
+}
+
+impl FightPriorityQueue {
+    pub fn new() -> Self {
+        Self {
+            equipment_set: HashSet::new(),
+            equipment_map: HashMap::new(),
+            player_queue: PriorityQueue::new()
+        }
+    }
+
+    pub fn push(&mut self, pair: (String, HashSet<EquipmentIdent>)) {
+        self.player_queue.push(pair.0.clone(), pair.1.len());
+        self.equipment_set.extend(pair.1.iter());
+        self.equipment_map.insert(pair.0, pair.1);
+    }
+
+    pub fn pop(&mut self) -> Option<String> {
+        let (player_name, _) = self.player_queue.pop()?;
+        let equipment = self.equipment_map.remove(&player_name)?;
+
+        let before_retain = self.equipment_set.len();
+        self.equipment_set.retain(|&k| !equipment.contains(&k));
+
+        if self.equipment_set.len() < before_retain {
+            Some(player_name)
+        } else {
+            debug!("Skipping player {}", player_name);
+            None
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.player_queue.len()
+    }
 }
 
 impl Config {
@@ -79,30 +120,30 @@ pub async fn search_and_attack(
     game_state: &mut GameState,
     mut page: usize) -> Result<()>
 {
-    let mut players_to_attack = PriorityQueue::new();
-    let mut items_to_discover: HashSet<EquipmentIdent> = HashSet::new();
+    let mut running = true;
+    let mut fight_queue = FightPriorityQueue::new();
 
-    loop {
+    while running {
         info!(target: "search", "Sending player update");
         command(session, game_state, &Command::UpdatePlayer).await?;
 
-        if players_to_attack.is_empty() {
-            items_to_discover.clear();
+        get_players_to_fight(
+            session, game_state,
+            &mut fight_queue, page
+        ).await?;
 
-            get_players_to_attack(
-                session, game_state,
-                &mut players_to_attack, &mut items_to_discover, page
-            ).await?;
-        }
+        while fight_queue.len() > 0 {
+            if let Some(player_name) = fight_queue.pop() {
+                fight_player(session, game_state, player_name).await?;
 
-        if let Some((player_name, _)) = players_to_attack.pop() {
-            fight_player(session, game_state, player_name).await?;
-        }
+                if let Some(last_fight) = game_state.last_fight.as_ref() {
+                    if !last_fight.has_player_won {
+                        info!("Last fight lost, exiting");
+                        running = false;
 
-        if let Some(last_fight) = game_state.last_fight.as_ref() {
-            if !last_fight.has_player_won {
-                info!("Last fight lost, exiting");
-                break;
+                        break;
+                    }
+                }
             }
         }
 
@@ -131,11 +172,10 @@ pub async fn get_scrapbook_info(
     Ok(ScrapBookInfo { scrapbook, progress })
 }
 
-pub async fn get_players_to_attack(
+pub async fn get_players_to_fight(
     session: &mut CharacterSession,
     game_state: &mut GameState,
-    players_to_attack: &mut PriorityQueue<String, u32>,
-    items_to_discover: &mut HashSet<EquipmentIdent>,
+    fight_queue: &mut FightPriorityQueue,
     page: usize) -> Result<()>
 {
     let scrapbook_info = get_scrapbook_info(session, game_state).await?;
@@ -154,21 +194,19 @@ pub async fn get_players_to_attack(
             .context("Player lookup failed")?
             .clone();
 
-        let mut uncovered = 0;
+        let mut missing_items = HashSet::new();
 
         for equip in player.equipment.0.iter().flatten() {
             let equip_ident = equip.equipment_ident().unwrap();
 
             if !scrapbook_info.scrapbook.items.contains(&equip_ident) {
-                if items_to_discover.insert(equip_ident) {
-                    uncovered += 1;
-                }
+                missing_items.insert(equip_ident);
             }
         }
 
-        if uncovered > 0 {
-            info!(target: "search", "Player {} has an item you haven't discovered yet ({})", player.name, uncovered);
-            players_to_attack.push(player.name.clone(), uncovered);
+        if missing_items.len() > 0 {
+            info!(target: "search", "Player {} has an item you haven't discovered yet ({})", player.name, missing_items.len());
+            fight_queue.push((player.name.clone(), missing_items));
         }
     }
 
