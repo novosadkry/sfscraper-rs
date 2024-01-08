@@ -99,7 +99,7 @@ pub async fn command(
         sleep(Duration::from_millis(250)).await;
 
         if let Err(_) = game_state.update(response) {
-            warn!(target: "main", "Server error, attempting reconnect");
+            warn!("Server error, attempting reconnect");
 
             let response = session.login().await?;
             sleep(Duration::from_secs(1)).await;
@@ -124,7 +124,7 @@ pub async fn search_and_attack(
     let mut fight_queue = FightPriorityQueue::new();
 
     while running {
-        info!(target: "search", "Sending player update");
+        info!("Sending player update");
         command(session, game_state, &Command::UpdatePlayer).await?;
 
         get_players_to_fight(
@@ -157,7 +157,7 @@ pub async fn get_scrapbook_info(
     session: &mut CharacterSession,
     game_state: &mut GameState) -> Result<ScrapBookInfo>
 {
-    info!(target: "search", "Updating scrapbook contents");
+    info!("Updating scrapbook contents");
     command(session, game_state, &Command::ViewScrapbook).await?;
 
     let scrapbook = game_state.unlocks.scrapbok
@@ -179,15 +179,15 @@ pub async fn get_players_to_fight(
     page: usize) -> Result<()>
 {
     let scrapbook_info = get_scrapbook_info(session, game_state).await?;
-    info!(target: "search", "Scrapbook progress: {:.2}%", scrapbook_info.progress);
+    info!("Scrapbook progress: {:.2}%", scrapbook_info.progress);
 
-    info!(target: "search", "Getting players from hall of fame (index: {})", page * 30);
+    info!("Getting players from hall of fame (index: {})", page * 30);
     command(session, game_state, &Command::HallOfFamePage { page }).await?;
 
     let hall_entries = game_state.other_players.hall_of_fame.clone();
 
     for hall_entry in hall_entries.iter() {
-        debug!(target: "search", "Viewing player {} details", hall_entry.name);
+        debug!("Viewing player {} details", hall_entry.name);
         command(session, game_state, &Command::ViewPlayer { ident: hall_entry.name.clone() }).await?;
 
         let player = game_state.other_players.lookup_name(&hall_entry.name)
@@ -205,7 +205,7 @@ pub async fn get_players_to_fight(
         }
 
         if missing_items.len() > 0 {
-            info!(target: "search", "Player {} has an item you haven't discovered yet ({})", player.name, missing_items.len());
+            info!("Player {} has an item you haven't discovered yet ({})", player.name, missing_items.len());
             fight_queue.push((player.name.clone(), missing_items));
         }
     }
@@ -219,7 +219,7 @@ pub async fn fight_player(
     player_name: String) -> Result<()>
 {
     loop {
-        info!(target: "fight", "Checking if free fight is available");
+        info!("Checking if free fight is available");
         command(session, game_state, &Command::CheckArena).await?;
 
         let free_fight = game_state.arena.next_free_fight.context("Free fight unavailable")?;
@@ -227,12 +227,12 @@ pub async fn fight_player(
 
         if wait_time.num_milliseconds() > 0 {
             wait_time = wait_time + chrono::Duration::seconds(5);
-            info!(target: "fight", "Waiting {} seconds until free fight is available", wait_time.num_seconds());
+            info!("Waiting {} seconds until free fight is available", wait_time.num_seconds());
             sleep(Duration::from_millis(u64::try_from(wait_time.num_milliseconds()).unwrap())).await;
         } else { break; }
     }
 
-    info!(target: "fight", "Fighting player {}", player_name);
+    info!("Fighting player {}", player_name);
     command(session, game_state, &Command::Fight { name: player_name, use_mushroom: false }).await?;
 
     Ok(())

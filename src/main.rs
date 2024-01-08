@@ -44,7 +44,7 @@ async fn main() -> Result<()> {
     let login_response = session.login().await?;
     let mut game_state = GameState::new(login_response)?;
 
-    info!(target: "main", "Logged in as {} ({})", session.username(), session.server_url());
+    info!("Logged in as {} ({})", session.username(), session.server_url());
 
     sfscraper::search_and_attack(&mut session, &mut game_state, config.start_index / 30).await?;
 
