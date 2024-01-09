@@ -22,7 +22,7 @@ const SFGAME_SCRAPBOOK_TOTAL: u32 = 2283;
 pub struct Config {
     pub login: String,
     pub password: String,
-    pub start_index: usize
+    pub discover_threshold: usize
 }
 
 #[derive(Debug)]
@@ -79,10 +79,11 @@ impl Config {
                 .context("SFGAME_USERNAME")?,
             password: env::var("SFGAME_PASSWORD")
                 .context("SFGAME_PASSWORD")?,
-            start_index: env::var("SFGAME_START_INDEX")
-                .context("SFGAME_START_INDEX")?
+            discover_threshold: env::var("SFGAME_DISCOVER_THRESHOLD")
+                .context("SFGAME_DISCOVER_THRESHOLD")
+                .unwrap_or(String::from("1"))
                 .parse::<usize>()
-                .context("SFGAME_START_INDEX")?
+                .context("SFGAME_DISCOVER_THRESHOLD")?
         })
     }
 }
@@ -118,23 +119,36 @@ pub async fn command(
 pub async fn search_and_attack(
     session: &mut CharacterSession,
     game_state: &mut GameState,
+    discover_threshold: usize,
     mut page: usize) -> Result<()>
 {
     let mut running = true;
     let mut fight_queue = FightPriorityQueue::new();
 
-    while running {
-        info!("Sending player update");
-        command(session, game_state, &Command::UpdatePlayer).await?;
+    info!("Sending player update");
+    command(session, game_state, &Command::UpdatePlayer).await?;
 
+    let mut scrapbook_info = get_scrapbook_info(session, game_state).await?;
+    info!("Scrapbook progress: {:.2}%", scrapbook_info.progress);
+
+    while running {
         get_players_to_fight(
             session, game_state,
-            &mut fight_queue, page
+            &mut fight_queue,
+            &scrapbook_info,
+            discover_threshold,
+            page
         ).await?;
 
         while fight_queue.len() > 0 {
             if let Some(player_name) = fight_queue.pop() {
                 fight_player(session, game_state, player_name).await?;
+
+                info!("Sending player update");
+                command(session, game_state, &Command::UpdatePlayer).await?;
+
+                scrapbook_info = get_scrapbook_info(session, game_state).await?;
+                info!("Scrapbook progress: {:.2}%", scrapbook_info.progress);
 
                 if let Some(last_fight) = game_state.last_fight.as_ref() {
                     if !last_fight.has_player_won {
@@ -176,11 +190,10 @@ pub async fn get_players_to_fight(
     session: &mut CharacterSession,
     game_state: &mut GameState,
     fight_queue: &mut FightPriorityQueue,
+    scrapbook_info: &ScrapBookInfo,
+    discover_threshold: usize,
     page: usize) -> Result<()>
 {
-    let scrapbook_info = get_scrapbook_info(session, game_state).await?;
-    info!("Scrapbook progress: {:.2}%", scrapbook_info.progress);
-
     info!("Getting players from hall of fame (index: {})", page * 30);
     command(session, game_state, &Command::HallOfFamePage { page }).await?;
 
@@ -204,7 +217,7 @@ pub async fn get_players_to_fight(
             }
         }
 
-        if missing_items.len() > 0 {
+        if missing_items.len() >= discover_threshold {
             info!("Player {} has an item you haven't discovered yet ({})", player.name, missing_items.len());
             fight_queue.push((player.name.clone(), missing_items));
         }

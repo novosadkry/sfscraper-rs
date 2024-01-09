@@ -20,6 +20,7 @@ async fn main() -> Result<()> {
     let config = Config::from_env()
         .context("Invalid or missing configuration")?;
 
+    info!("Logging into SFGames account");
     let account = SFAccount::login(config.login, config.password).await?;
     let mut sessions: Vec<CharacterSession> = account.characters().await?
         .into_iter().flatten()
@@ -41,12 +42,22 @@ async fn main() -> Result<()> {
         bail!("Invalid selection");
     };
 
+    input.clear();
+
+    println!("Please enter starting position in Hall of Fame:");
+    io::stdin().read_line(&mut input)?;
+    let hall_start = input.trim().parse::<usize>()?;
+
     let login_response = session.login().await?;
     let mut game_state = GameState::new(login_response)?;
 
     info!("Logged in as {} ({})", session.username(), session.server_url());
 
-    sfscraper::search_and_attack(&mut session, &mut game_state, config.start_index / 30).await?;
+    sfscraper::search_and_attack(
+        &mut session, &mut game_state,
+        config.discover_threshold,
+        hall_start / 30,
+    ).await?;
 
     Ok(())
 }
