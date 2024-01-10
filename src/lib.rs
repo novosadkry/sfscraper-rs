@@ -96,16 +96,19 @@ pub async fn command(
     let mut retries = 0;
 
     while retries < 5 {
-        let response = session.send_command(command).await?;
         sleep(Duration::from_millis(250)).await;
 
-        if let Err(_) = game_state.update(response) {
+        if let Err(error) = session
+            .send_command(command).await
+            .and_then(|response| game_state.update(response))
+        {
+            warn!("{:?}", error);
             warn!("Server error, attempting reconnect");
 
             let response = session.login().await?;
-            sleep(Duration::from_secs(1)).await;
-
             game_state.update(response)?;
+
+            sleep(Duration::from_secs(1)).await;
         } else {
             return Ok(());
         }
