@@ -55,6 +55,7 @@ async fn main() -> Result<()> {
 
     sfscraper::search_and_attack(
         &mut session, &mut game_state,
+        config.level_threshold,
         config.discover_threshold,
         hall_start / 30,
     ).await?;

@@ -22,6 +22,7 @@ const SFGAME_SCRAPBOOK_TOTAL: u32 = 2283;
 pub struct Config {
     pub login: String,
     pub password: String,
+    pub level_threshold: u16,
     pub discover_threshold: usize
 }
 
@@ -35,6 +36,11 @@ pub struct FightPriorityQueue {
     equipment_set: HashSet<EquipmentIdent>,
     equipment_map: HashMap<String, HashSet<EquipmentIdent>>,
     player_queue: PriorityQueue<String, usize>
+}
+
+pub enum FightPriorityQueueItem {
+    Ok(String),
+    Skip(String)
 }
 
 impl FightPriorityQueue {
@@ -52,7 +58,7 @@ impl FightPriorityQueue {
         self.equipment_map.insert(pair.0, pair.1);
     }
 
-    pub fn pop(&mut self) -> Option<String> {
+    pub fn pop(&mut self) -> Option<FightPriorityQueueItem> {
         let (player_name, _) = self.player_queue.pop()?;
         let equipment = self.equipment_map.remove(&player_name)?;
 
@@ -60,10 +66,9 @@ impl FightPriorityQueue {
         self.equipment_set.retain(|&k| !equipment.contains(&k));
 
         if self.equipment_set.len() < before_retain {
-            Some(player_name)
+            Some(FightPriorityQueueItem::Ok(player_name))
         } else {
-            debug!("Skipping player {}", player_name);
-            None
+            Some(FightPriorityQueueItem::Skip(player_name))
         }
     }
 
@@ -79,6 +84,11 @@ impl Config {
                 .context("SFGAME_USERNAME")?,
             password: env::var("SFGAME_PASSWORD")
                 .context("SFGAME_PASSWORD")?,
+            level_threshold: env::var("SFGAME_LEVEL_THRESHOLD")
+                .context("SFGAME_LEVEL_THRESHOLD")
+                .unwrap_or(String::from("500"))
+                .parse::<u16>()
+                .context("SFGAME_LEVEL_THRESHOLD")?,
             discover_threshold: env::var("SFGAME_DISCOVER_THRESHOLD")
                 .context("SFGAME_DISCOVER_THRESHOLD")
                 .unwrap_or(String::from("1"))
@@ -122,6 +132,7 @@ pub async fn command(
 pub async fn search_and_attack(
     session: &mut CharacterSession,
     game_state: &mut GameState,
+    level_threshold: u16,
     discover_threshold: usize,
     mut page: usize) -> Result<()>
 {
@@ -139,32 +150,44 @@ pub async fn search_and_attack(
             session, game_state,
             &mut fight_queue,
             &scrapbook_info,
+            level_threshold,
             discover_threshold,
             page
         ).await?;
 
         while fight_queue.len() > 0 {
-            if let Some(player_name) = fight_queue.pop() {
-                fight_player(session, game_state, player_name).await?;
+            match fight_queue.pop() {
+                Some(FightPriorityQueueItem::Ok(player_name)) => {
+                    fight_player(session, game_state, player_name).await?;
 
-                info!("Sending player update");
-                command(session, game_state, &Command::UpdatePlayer).await?;
+                    if let Some(last_fight) = &game_state.last_fight {
+                        if !last_fight.has_player_won {
+                            info!("Last fight lost, exiting");
+                            running = false;
 
-                scrapbook_info = get_scrapbook_info(session, game_state).await?;
-                info!("Scrapbook progress: {:.2}%", scrapbook_info.progress);
-
-                if let Some(last_fight) = game_state.last_fight.as_ref() {
-                    if !last_fight.has_player_won {
-                        info!("Last fight lost, exiting");
-                        running = false;
-
-                        break;
+                            break;
+                        }
                     }
-                }
+
+                    info!("Sending player update");
+                    command(session, game_state, &Command::UpdatePlayer).await?;
+
+                    scrapbook_info = get_scrapbook_info(session, game_state).await?;
+                    info!("Scrapbook progress: {:.2}%", scrapbook_info.progress);
+                },
+                Some(FightPriorityQueueItem::Skip(player_name)) => {
+                    debug!("Player {} had all items discovered, skipping", player_name);
+                },
+                None => bail!("Item popped while fight_queue length is zero")
             }
         }
 
-        page -= 1;
+        if page > 0 {
+            page -= 1;
+        } else if running {
+            info!("Last page reached, exiting");
+            running = false;
+        }
     }
 
     Ok(())
@@ -194,6 +217,7 @@ pub async fn get_players_to_fight(
     game_state: &mut GameState,
     fight_queue: &mut FightPriorityQueue,
     scrapbook_info: &ScrapBookInfo,
+    level_threshold: u16,
     discover_threshold: usize,
     page: usize) -> Result<()>
 {
@@ -209,6 +233,11 @@ pub async fn get_players_to_fight(
         let player = game_state.other_players.lookup_name(&hall_entry.name)
             .context("Player lookup failed")?
             .clone();
+
+        if player.level > level_threshold {
+            debug!("Player {} surpasses max level threshold, skipping", player.name);
+            continue;
+        }
 
         let mut missing_items = HashSet::new();
 
