@@ -216,7 +216,7 @@ pub async fn search_and_attack(
                             wait_free_fight(session, game_state).await?;
                         },
                         Some(FightPriorityQueueItem::Skip(player_name)) => {
-                            debug!("Player {} had all items discovered, skipping", player_name);
+                            info!("Player {} had all items discovered, skipping", player_name);
                         },
                         None => bail!("Item popped while fight_queue length is zero")
                     }
@@ -304,13 +304,16 @@ pub async fn get_player_to_fight(
         .clone();
 
     if player.level > search_settings.level_threshold {
-        debug!("Player {} surpasses max level threshold, skipping", player.name);
+        warn!("Player {} surpasses max level threshold, skipping", player.name);
         return Ok(None)
     }
 
     let mut missing_items = HashSet::new();
 
-    for equip in player.equipment.0.iter().flatten() {
+    for equip in player.equipment.0.iter()
+        .flatten()
+        .filter(|e| !e.is_legendary())
+    {
         let equip_ident = equip.equipment_ident().unwrap();
 
         if !scrapbook_info.scrapbook.items.contains(&equip_ident) {
@@ -349,13 +352,16 @@ pub async fn get_players_to_fight(
             .clone();
 
         if player.level > search_settings.level_threshold {
-            debug!("Player {} surpasses max level threshold, skipping", player.name);
+            warn!("Player {} surpasses max level threshold, skipping", player.name);
             continue;
         }
 
         let mut missing_items = HashSet::new();
 
-        for equip in player.equipment.0.iter().flatten() {
+        for equip in player.equipment.0.iter()
+            .flatten()
+            .filter(|e| !e.is_legendary())
+        {
             let equip_ident = equip.equipment_ident().unwrap();
 
             if !scrapbook_info.scrapbook.items.contains(&equip_ident) {
