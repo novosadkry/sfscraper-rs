@@ -187,6 +187,8 @@ pub async fn search_and_attack(
     let mut scrapbook_info = get_scrapbook_info(session, game_state).await?;
     info!("Scrapbook progress: {:.2}%", scrapbook_info.progress);
 
+    wait_free_fight(session, game_state).await?;
+
     while running {
         match search_strategy {
             SearchStrategy::Prefetch => {
@@ -200,7 +202,9 @@ pub async fn search_and_attack(
                 while fight_queue.len() > 0 {
                     match fight_queue.pop() {
                         Some(FightPriorityQueueItem::Ok(player_name)) => {
-                            fight_player(session, game_state, player_name).await?;
+                            info!("Fighting player {}", player_name);
+                            command(session, game_state, &Command::Fight { name: player_name, use_mushroom: false }).await?;
+
                             last_fight = game_state.last_fight.take();
 
                             info!("Sending player update");
@@ -208,6 +212,8 @@ pub async fn search_and_attack(
 
                             scrapbook_info = get_scrapbook_info(session, game_state).await?;
                             info!("Scrapbook progress: {:.2}%", scrapbook_info.progress);
+
+                            wait_free_fight(session, game_state).await?;
                         },
                         Some(FightPriorityQueueItem::Skip(player_name)) => {
                             debug!("Player {} had all items discovered, skipping", player_name);
@@ -230,7 +236,9 @@ pub async fn search_and_attack(
                         &search_settings).await?
                     else { continue; };
 
-                    fight_player(session, game_state, player_name).await?;
+                    info!("Fighting player {}", player_name);
+                    command(session, game_state, &Command::Fight { name: player_name, use_mushroom: false }).await?;
+
                     last_fight = game_state.last_fight.take();
 
                     info!("Sending player update");
@@ -238,6 +246,8 @@ pub async fn search_and_attack(
 
                     scrapbook_info = get_scrapbook_info(session, game_state).await?;
                     info!("Scrapbook progress: {:.2}%", scrapbook_info.progress);
+
+                    wait_free_fight(session, game_state).await?;
                 }
             }
         }
@@ -362,10 +372,9 @@ pub async fn get_players_to_fight(
     Ok(())
 }
 
-pub async fn fight_player(
+pub async fn wait_free_fight(
     session: &mut CharacterSession,
-    game_state: &mut GameState,
-    player_name: String) -> Result<()>
+    game_state: &mut GameState) -> Result<()>
 {
     loop {
         info!("Checking if free fight is available");
@@ -380,9 +389,6 @@ pub async fn fight_player(
             sleep(Duration::from_millis(u64::try_from(wait_time.num_milliseconds()).unwrap())).await;
         } else { break; }
     }
-
-    info!("Fighting player {}", player_name);
-    command(session, game_state, &Command::Fight { name: player_name, use_mushroom: false }).await?;
 
     Ok(())
 }
