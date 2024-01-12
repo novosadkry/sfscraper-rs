@@ -7,7 +7,10 @@ use sf_api::{
     gamestate::GameState
 };
 
-use sfscraper::Config;
+use sfscraper::{
+    search_and_attack,
+    Config, SearchSettings
+};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -52,11 +55,15 @@ async fn main() -> Result<()> {
     let mut game_state = GameState::new(login_response)?;
 
     info!("Logged in as {} ({})", session.username(), session.server_url());
+    info!("Using {:?} strategy", config.search_strategy);
 
-    sfscraper::search_and_attack(
+    search_and_attack(
         &mut session, &mut game_state,
-        config.level_threshold,
-        config.discover_threshold,
+        config.search_strategy,
+        SearchSettings {
+            discover_threshold: config.discover_threshold,
+            level_threshold: config.level_threshold
+        },
         hall_start / 30,
     ).await?;
 

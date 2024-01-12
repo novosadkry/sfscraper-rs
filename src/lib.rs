@@ -1,7 +1,14 @@
-use std::{env, collections::{HashSet, HashMap}};
+use std::{
+    env,
+    str::FromStr,
+    collections::{HashSet, HashMap}
+};
 use chrono::Local;
 use log::{info, debug, warn};
-use anyhow::{Context, Result, bail};
+use anyhow::{
+    Context, Result,
+    bail, anyhow
+};
 use tokio::time::{sleep, Duration};
 use priority_queue::PriorityQueue;
 use sf_api::{
@@ -11,9 +18,11 @@ use sf_api::{
         unlockables::{
             ScrapBook,
             EquipmentIdent
-        }
+        },
+        arena::Fight,
+        social::HallOfFameEntry
     },
-    command::Command,
+    command::Command
 };
 
 const SFGAME_SCRAPBOOK_TOTAL: u32 = 2283;
@@ -22,6 +31,19 @@ const SFGAME_SCRAPBOOK_TOTAL: u32 = 2283;
 pub struct Config {
     pub login: String,
     pub password: String,
+    pub level_threshold: u16,
+    pub discover_threshold: usize,
+    pub search_strategy: SearchStrategy
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum SearchStrategy {
+    Simple,
+    Prefetch
+}
+
+#[derive(Debug)]
+pub struct SearchSettings {
     pub level_threshold: u16,
     pub discover_threshold: usize
 }
@@ -32,15 +54,29 @@ pub struct ScrapBookInfo {
     pub progress: f32
 }
 
+#[derive(Debug)]
+pub enum FightPriorityQueueItem {
+    Ok(String),
+    Skip(String)
+}
+
+#[derive(Debug)]
 pub struct FightPriorityQueue {
     equipment_set: HashSet<EquipmentIdent>,
     equipment_map: HashMap<String, HashSet<EquipmentIdent>>,
     player_queue: PriorityQueue<String, usize>
 }
 
-pub enum FightPriorityQueueItem {
-    Ok(String),
-    Skip(String)
+impl FromStr for SearchStrategy {
+    type Err = ();
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        match input {
+            "simple" => Ok(SearchStrategy::Simple),
+            "prefetch" => Ok(SearchStrategy::Prefetch),
+            _ => Err(())
+        }
+    }
 }
 
 impl FightPriorityQueue {
@@ -93,7 +129,12 @@ impl Config {
                 .context("SFGAME_DISCOVER_THRESHOLD")
                 .unwrap_or(String::from("1"))
                 .parse::<usize>()
-                .context("SFGAME_DISCOVER_THRESHOLD")?
+                .context("SFGAME_DISCOVER_THRESHOLD")?,
+            search_strategy: env::var("SFGAME_SEARCH_STRATEGY")
+                .context("SFGAME_SEARCH_STRATEGY")
+                .unwrap_or(String::from("SIMPLE"))
+                .parse::<SearchStrategy>()
+                .map_err(|_| anyhow!("SFGAME_SEARCH_STRATEGY"))?
         })
     }
 }
@@ -132,11 +173,12 @@ pub async fn command(
 pub async fn search_and_attack(
     session: &mut CharacterSession,
     game_state: &mut GameState,
-    level_threshold: u16,
-    discover_threshold: usize,
+    search_strategy: SearchStrategy,
+    search_settings: SearchSettings,
     mut page: usize) -> Result<()>
 {
     let mut running = true;
+    let mut last_fight: Option<Fight> = None;
     let mut fight_queue = FightPriorityQueue::new();
 
     info!("Sending player update");
@@ -146,39 +188,64 @@ pub async fn search_and_attack(
     info!("Scrapbook progress: {:.2}%", scrapbook_info.progress);
 
     while running {
-        get_players_to_fight(
-            session, game_state,
-            &mut fight_queue,
-            &scrapbook_info,
-            level_threshold,
-            discover_threshold,
-            page
-        ).await?;
+        match search_strategy {
+            SearchStrategy::Prefetch => {
+                get_players_to_fight(
+                    session, game_state,
+                    &mut fight_queue,
+                    &scrapbook_info,
+                    &search_settings,
+                    page).await?;
 
-        while fight_queue.len() > 0 {
-            match fight_queue.pop() {
-                Some(FightPriorityQueueItem::Ok(player_name)) => {
-                    fight_player(session, game_state, player_name).await?;
+                while fight_queue.len() > 0 {
+                    match fight_queue.pop() {
+                        Some(FightPriorityQueueItem::Ok(player_name)) => {
+                            fight_player(session, game_state, player_name).await?;
+                            last_fight = game_state.last_fight.take();
 
-                    if let Some(last_fight) = &game_state.last_fight {
-                        if !last_fight.has_player_won {
-                            info!("Last fight lost, exiting");
-                            running = false;
+                            info!("Sending player update");
+                            command(session, game_state, &Command::UpdatePlayer).await?;
 
-                            break;
-                        }
+                            scrapbook_info = get_scrapbook_info(session, game_state).await?;
+                            info!("Scrapbook progress: {:.2}%", scrapbook_info.progress);
+                        },
+                        Some(FightPriorityQueueItem::Skip(player_name)) => {
+                            debug!("Player {} had all items discovered, skipping", player_name);
+                        },
+                        None => bail!("Item popped while fight_queue length is zero")
                     }
+                }
+            },
+            SearchStrategy::Simple => {
+                info!("Getting players from hall of fame (index: {})", page * 30);
+                command(session, game_state, &Command::HallOfFamePage { page }).await?;
+
+                let hall_entries = game_state.other_players.hall_of_fame.clone();
+
+                for hall_entry in hall_entries.iter() {
+                    let Some(player_name) = get_player_to_fight(
+                        session, game_state,
+                        hall_entry,
+                        &scrapbook_info,
+                        &search_settings).await?
+                    else { continue; };
+
+                    fight_player(session, game_state, player_name).await?;
+                    last_fight = game_state.last_fight.take();
 
                     info!("Sending player update");
                     command(session, game_state, &Command::UpdatePlayer).await?;
 
                     scrapbook_info = get_scrapbook_info(session, game_state).await?;
                     info!("Scrapbook progress: {:.2}%", scrapbook_info.progress);
-                },
-                Some(FightPriorityQueueItem::Skip(player_name)) => {
-                    debug!("Player {} had all items discovered, skipping", player_name);
-                },
-                None => bail!("Item popped while fight_queue length is zero")
+                }
+            }
+        }
+
+        if let Some(fight) = &last_fight {
+            if !fight.has_player_won {
+                info!("Last fight lost, exiting");
+                running = false;
             }
         }
 
@@ -212,13 +279,50 @@ pub async fn get_scrapbook_info(
     Ok(ScrapBookInfo { scrapbook, progress })
 }
 
+pub async fn get_player_to_fight(
+    session: &mut CharacterSession,
+    game_state: &mut GameState,
+    hall_entry: &HallOfFameEntry,
+    scrapbook_info: &ScrapBookInfo,
+    search_settings: &SearchSettings) -> Result<Option<String>>
+{
+    debug!("Viewing player {} details", hall_entry.name);
+    command(session, game_state, &Command::ViewPlayer { ident: hall_entry.name.clone() }).await?;
+
+    let player = game_state.other_players.lookup_name(&hall_entry.name)
+        .context("Player lookup failed")?
+        .clone();
+
+    if player.level > search_settings.level_threshold {
+        debug!("Player {} surpasses max level threshold, skipping", player.name);
+        return Ok(None)
+    }
+
+    let mut missing_items = HashSet::new();
+
+    for equip in player.equipment.0.iter().flatten() {
+        let equip_ident = equip.equipment_ident().unwrap();
+
+        if !scrapbook_info.scrapbook.items.contains(&equip_ident) {
+            missing_items.insert(equip_ident);
+        }
+    }
+
+    if missing_items.len() >= search_settings.discover_threshold {
+        info!("Player {} has an item you haven't discovered yet ({})", player.name, missing_items.len());
+        return Ok(Some(player.name.clone()));
+    }
+
+    Ok(None)
+}
+
+
 pub async fn get_players_to_fight(
     session: &mut CharacterSession,
     game_state: &mut GameState,
     fight_queue: &mut FightPriorityQueue,
     scrapbook_info: &ScrapBookInfo,
-    level_threshold: u16,
-    discover_threshold: usize,
+    search_settings: &SearchSettings,
     page: usize) -> Result<()>
 {
     info!("Getting players from hall of fame (index: {})", page * 30);
@@ -234,7 +338,7 @@ pub async fn get_players_to_fight(
             .context("Player lookup failed")?
             .clone();
 
-        if player.level > level_threshold {
+        if player.level > search_settings.level_threshold {
             debug!("Player {} surpasses max level threshold, skipping", player.name);
             continue;
         }
@@ -249,7 +353,7 @@ pub async fn get_players_to_fight(
             }
         }
 
-        if missing_items.len() >= discover_threshold {
+        if missing_items.len() >= search_settings.discover_threshold {
             info!("Player {} has an item you haven't discovered yet ({})", player.name, missing_items.len());
             fight_queue.push((player.name.clone(), missing_items));
         }
