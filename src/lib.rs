@@ -31,6 +31,7 @@ const SFGAME_SCRAPBOOK_TOTAL: u32 = 2283;
 pub struct Config {
     pub login: String,
     pub password: String,
+    pub steam_login: bool,
     pub level_threshold: u16,
     pub discover_threshold: usize,
     pub search_strategy: SearchStrategy
@@ -120,6 +121,11 @@ impl Config {
                 .context("SFGAME_USERNAME")?,
             password: env::var("SFGAME_PASSWORD")
                 .context("SFGAME_PASSWORD")?,
+            steam_login: env::var("SFGAME_STEAM_LOGIN")
+                .context("SFGAME_STEAM_LOGIN")
+                .unwrap_or(String::from("false"))
+                .parse::<bool>()
+                .context("SFGAME_STEAM_LOGIN")?,
             level_threshold: env::var("SFGAME_LEVEL_THRESHOLD")
                 .context("SFGAME_LEVEL_THRESHOLD")
                 .unwrap_or(String::from("500"))

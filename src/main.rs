@@ -24,8 +24,14 @@ async fn main() -> Result<()> {
         .context("Invalid or missing configuration")?;
 
     info!("Logging into SFGames account");
-    let account = SFAccount::login(config.login, config.password).await?;
-    let mut sessions: Vec<CharacterSession> = account.characters().await?
+    let account = if config.steam_login {
+        SFAccount::login_with_steam().await?
+    } else {
+        SFAccount::login(config.login, config.password).await?
+    };
+
+    let mut sessions: Vec<CharacterSession> = account
+        .characters().await?
         .into_iter().flatten()
         .collect();
 
