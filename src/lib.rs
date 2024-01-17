@@ -34,7 +34,8 @@ pub struct Config {
     pub steam_login: bool,
     pub level_threshold: u16,
     pub discover_threshold: usize,
-    pub search_strategy: SearchStrategy
+    pub search_strategy: SearchStrategy,
+    pub search_direction: SearchDirection
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -43,10 +44,17 @@ pub enum SearchStrategy {
     Prefetch
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum SearchDirection {
+    Ascending,
+    Descending
+}
+
 #[derive(Debug)]
 pub struct SearchSettings {
     pub level_threshold: u16,
-    pub discover_threshold: usize
+    pub discover_threshold: usize,
+    pub search_direction: SearchDirection
 }
 
 #[derive(Debug)]
@@ -75,6 +83,18 @@ impl FromStr for SearchStrategy {
         match input {
             "simple" => Ok(SearchStrategy::Simple),
             "prefetch" => Ok(SearchStrategy::Prefetch),
+            _ => Err(())
+        }
+    }
+}
+
+impl FromStr for SearchDirection {
+    type Err = ();
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        match input {
+            "ascending" => Ok(SearchDirection::Ascending),
+            "descending" => Ok(SearchDirection::Descending),
             _ => Err(())
         }
     }
@@ -140,7 +160,12 @@ impl Config {
                 .context("SFGAME_SEARCH_STRATEGY")
                 .unwrap_or(String::from("SIMPLE"))
                 .parse::<SearchStrategy>()
-                .map_err(|_| anyhow!("SFGAME_SEARCH_STRATEGY"))?
+                .map_err(|_| anyhow!("SFGAME_SEARCH_STRATEGY"))?,
+            search_direction: env::var("SFGAME_SEARCH_DIRECTION")
+                .context("SFGAME_SEARCH_DIRECTION")
+                .unwrap_or(String::from("ASCENDING"))
+                .parse::<SearchDirection>()
+                .map_err(|_| anyhow!("SFGAME_SEARCH_DIRECTION"))?
         })
     }
 }
@@ -265,11 +290,19 @@ pub async fn search_and_attack(
             }
         }
 
-        if page > 0 {
-            page -= 1;
-        } else if running {
-            info!("Last page reached, exiting");
-            running = false;
+        match search_settings.search_direction {
+            SearchDirection::Ascending => {
+                if page > 0 {
+                    page -= 1;
+                } else if running {
+                    info!("Last page reached, exiting");
+                    running = false;
+                }
+            }
+            SearchDirection::Descending => {
+                // TODO: Handle out-of-bounds pages
+                page += 1;
+            }
         }
     }
 

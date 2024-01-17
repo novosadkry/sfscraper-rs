@@ -68,7 +68,8 @@ async fn main() -> Result<()> {
         config.search_strategy,
         SearchSettings {
             discover_threshold: config.discover_threshold,
-            level_threshold: config.level_threshold
+            level_threshold: config.level_threshold,
+            search_direction: config.search_direction
         },
         hall_start / 30,
     ).await?;
