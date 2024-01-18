@@ -211,6 +211,7 @@ pub async fn search_and_attack(
     let mut running = true;
     let mut last_fight: Option<Fight> = None;
     let mut fight_queue = FightPriorityQueue::new();
+    let guild_members = get_guild_members(game_state);
 
     info!("Sending player update");
     command(session, game_state, &Command::UpdatePlayer).await?;
@@ -228,6 +229,7 @@ pub async fn search_and_attack(
                     &mut fight_queue,
                     &scrapbook_info,
                     &search_settings,
+                    &guild_members,
                     page).await?;
 
                 while fight_queue.len() > 0 {
@@ -264,7 +266,8 @@ pub async fn search_and_attack(
                         session, game_state,
                         hall_entry,
                         &scrapbook_info,
-                        &search_settings).await?
+                        &search_settings,
+                        &guild_members).await?
                     else { continue; };
 
                     info!("Fighting player {}", player_name);
@@ -333,8 +336,16 @@ pub async fn get_player_to_fight(
     game_state: &mut GameState,
     hall_entry: &HallOfFameEntry,
     scrapbook_info: &ScrapBookInfo,
-    search_settings: &SearchSettings) -> Result<Option<String>>
+    search_settings: &SearchSettings,
+    guild_members: &Option<Vec<String>>) -> Result<Option<String>>
 {
+    if let Some(guild_members) = guild_members {
+        if guild_members.contains(&hall_entry.name) {
+            info!("Player {} is a guild member, skipping", hall_entry.name);
+            return Ok(None)
+        }
+    }
+
     debug!("Viewing player {} details", hall_entry.name);
     command(session, game_state, &Command::ViewPlayer { ident: hall_entry.name.clone() }).await?;
 
@@ -368,13 +379,13 @@ pub async fn get_player_to_fight(
     Ok(None)
 }
 
-
 pub async fn get_players_to_fight(
     session: &mut CharacterSession,
     game_state: &mut GameState,
     fight_queue: &mut FightPriorityQueue,
     scrapbook_info: &ScrapBookInfo,
     search_settings: &SearchSettings,
+    guild_members: &Option<Vec<String>>,
     page: usize) -> Result<()>
 {
     info!("Getting players from hall of fame (index: {})", page * 30);
@@ -383,6 +394,13 @@ pub async fn get_players_to_fight(
     let hall_entries = game_state.other_players.hall_of_fame.clone();
 
     for hall_entry in hall_entries.iter() {
+        if let Some(guild_members) = guild_members {
+            if guild_members.contains(&hall_entry.name) {
+                info!("Player {} is a guild member, skipping", hall_entry.name);
+                continue;
+            }
+        }
+
         debug!("Viewing player {} details", hall_entry.name);
         command(session, game_state, &Command::ViewPlayer { ident: hall_entry.name.clone() }).await?;
 
@@ -436,4 +454,21 @@ pub async fn wait_free_fight(
     }
 
     Ok(())
+}
+
+fn get_guild_members(
+    game_state: &mut GameState) -> Option<Vec<String>>
+{
+    if let Some(guild_members) = game_state.unlocks.guild
+        .as_ref()
+        .map(|g| &g.members)
+    {
+        Some(
+            guild_members
+                .iter()
+                .map(|p| p.name.clone())
+                .collect::<Vec<String>>()
+        )
+    }
+    else { None }
 }
